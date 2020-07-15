@@ -233,6 +233,9 @@ export default class ChimeSdkWrapper implements DeviceChangeObserver {
     this.audioVideo?.realtimeSubscribeToAttendeeIdPresence(
       (presentAttendeeId: string, present: boolean): void => {
         if (!present) {
+          // Stop listening to their volume indicator.
+          this.audioVideo?.realtimeUnsubscribeFromVolumeIndicator(presentAttendeeId);
+
           delete this.roster[presentAttendeeId];
           this.publishRosterUpdate.cancel();
           this.publishRosterUpdate();
