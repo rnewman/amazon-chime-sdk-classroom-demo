@@ -231,71 +231,92 @@ export default class ChimeSdkWrapper implements DeviceChangeObserver {
     this.audioVideo?.addDeviceChangeObserver(this);
 
     this.audioVideo?.realtimeSubscribeToAttendeeIdPresence(
-      (presentAttendeeId: string, present: boolean): void => {
+      (presentAttendeeId: string, present: boolean) => {
         if (!present) {
+          // Stop listening to their volume indicator.
+          this.audioVideo?.realtimeUnsubscribeFromVolumeIndicator(presentAttendeeId);
+
+          // Remove them from the roster.
           delete this.roster[presentAttendeeId];
+
+          // Send a roster update immediately.
           this.publishRosterUpdate.cancel();
           this.publishRosterUpdate();
           return;
         }
 
+        // Otherwise, they're new, so add them to the roster…
+        if (!this.roster[presentAttendeeId]) {
+          this.roster[presentAttendeeId] = { name: '' };
+        }
+        // … subscribe to volume changes for this attendee…
         this.audioVideo?.realtimeSubscribeToVolumeIndicator(
           presentAttendeeId,
-          async (
-            attendeeId: string,
-            volume: number | null,
-            muted: boolean | null,
-            signalStrength: number | null
-          ) => {
-            const baseAttendeeId = new DefaultModality(attendeeId).base();
-            if (baseAttendeeId !== attendeeId) {
-              // Don't include the content attendee in the roster.
-              //
-              // When you or other attendees share content (a screen capture, a video file,
-              // or any other MediaStream object), the content attendee (attendee-id#content) joins the session and
-              // shares content as if a regular attendee shares a video.
-              //
-              // For example, your attendee ID is "my-id". When you call meetingSession.audioVideo.startContentShare,
-              // the content attendee "my-id#content" will join the session and share your content.
-              return;
-            }
-
-            let shouldPublishImmediately = false;
-
-            if (!this.roster[attendeeId]) {
-              this.roster[attendeeId] = { name: '' };
-            }
-            if (volume !== null) {
-              this.roster[attendeeId].volume = Math.round(volume * 100);
-            }
-            if (muted !== null) {
-              this.roster[attendeeId].muted = muted;
-            }
-            if (signalStrength !== null) {
-              this.roster[attendeeId].signalStrength = Math.round(
-                signalStrength * 100
-              );
-            }
-            if (this.title && attendeeId && !this.roster[attendeeId].name) {
-              const response = await fetch(
-                `${getBaseUrl()}attendee?title=${encodeURIComponent(
-                  this.title
-                )}&attendee=${encodeURIComponent(attendeeId)}`
-              );
-              const json = await response.json();
-              this.roster[attendeeId].name = json.AttendeeInfo.Name || '';
-              shouldPublishImmediately = true;
-            }
-
-            if (shouldPublishImmediately) {
-              this.publishRosterUpdate.cancel();
-            }
-            this.publishRosterUpdate();
-          }
+          this.onVolumeChanged.bind(this)
         );
+
+        // … and fetch their name if we don't know it.
+        if (this.title && !this.roster[presentAttendeeId].name) {
+          this.updateAttendeeName(presentAttendeeId);
+        }
       }
     );
   };
+
+  async updateAttendeeName(attendeeId: string) {
+    if (!this.title) {
+      throw new Error('No meeting title.');
+    }
+
+    const response = await fetch(
+      `${getBaseUrl()}attendee?title=${encodeURIComponent(
+        this.title
+      )}&attendee=${encodeURIComponent(attendeeId)}`
+    );
+    const json = await response.json();
+
+    // This is an async call, so it's possible they were removed from the roster
+    // since we started the work.
+    if (attendeeId in this.roster) {
+      this.roster[attendeeId].name = json.AttendeeInfo.Name || '';
+      this.publishRosterUpdate.cancel();
+      this.publishRosterUpdate();
+    }
+  }
+
+  async onVolumeChanged(
+    attendeeId: string,
+    volume: number | null,
+    muted: boolean | null,
+    signalStrength: number | null
+  ) {
+    const baseAttendeeId = new DefaultModality(attendeeId).base();
+    if (baseAttendeeId !== attendeeId) {
+      // Don't include the content attendee in the roster.
+      //
+      // When you or other attendees share content (a screen capture, a video file,
+      // or any other MediaStream object), the content attendee (attendee-id#content) joins the session and
+      // shares content as if a regular attendee shares a video.
+      //
+      // For example, your attendee ID is "my-id". When you call meetingSession.audioVideo.startContentShare,
+      // the content attendee "my-id#content" will join the session and share your content.
+      return;
+    }
+
+    if (volume !== null) {
+      this.roster[attendeeId].volume = Math.round(volume * 100);
+    }
+    if (muted !== null) {
+      this.roster[attendeeId].muted = muted;
+    }
+    if (signalStrength !== null) {
+      this.roster[attendeeId].signalStrength = Math.round(
+        signalStrength * 100
+      );
+    }
+
+    this.publishRosterUpdate();
+  }
 
   joinRoom = async (element: HTMLAudioElement | null): Promise<void> => {
     if (!element) {
