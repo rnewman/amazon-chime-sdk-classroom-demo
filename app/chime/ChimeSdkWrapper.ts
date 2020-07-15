@@ -231,17 +231,39 @@ export default class ChimeSdkWrapper implements DeviceChangeObserver {
     this.audioVideo?.addDeviceChangeObserver(this);
 
     this.audioVideo?.realtimeSubscribeToAttendeeIdPresence(
-      (presentAttendeeId: string, present: boolean): void => {
+      async (presentAttendeeId: string, present: boolean) => {
         if (!present) {
           // Stop listening to their volume indicator.
           this.audioVideo?.realtimeUnsubscribeFromVolumeIndicator(presentAttendeeId);
 
+          // Remove them from the roster.
           delete this.roster[presentAttendeeId];
+
+          // Send a roster update immediately.
           this.publishRosterUpdate.cancel();
           this.publishRosterUpdate();
           return;
         }
 
+        // Otherwise, they're new, so add them to the roster…
+        if (!this.roster[presentAttendeeId]) {
+          this.roster[presentAttendeeId] = { name: '' };
+        }
+
+        // … fetch their name if we don't know it…
+        if (this.title && !this.roster[presentAttendeeId].name) {
+          const response = await fetch(
+            `${getBaseUrl()}attendee?title=${encodeURIComponent(
+              this.title
+            )}&attendee=${encodeURIComponent(presentAttendeeId)}`
+          );
+          const json = await response.json();
+          this.roster[presentAttendeeId].name = json.AttendeeInfo.Name || '';
+          this.publishRosterUpdate.cancel();
+          this.publishRosterUpdate();
+        }
+
+        // … and subscribe to volume changes for this attendee.
         this.audioVideo?.realtimeSubscribeToVolumeIndicator(
           presentAttendeeId,
           async (
@@ -263,11 +285,6 @@ export default class ChimeSdkWrapper implements DeviceChangeObserver {
               return;
             }
 
-            let shouldPublishImmediately = false;
-
-            if (!this.roster[attendeeId]) {
-              this.roster[attendeeId] = { name: '' };
-            }
             if (volume !== null) {
               this.roster[attendeeId].volume = Math.round(volume * 100);
             }
@@ -279,20 +296,7 @@ export default class ChimeSdkWrapper implements DeviceChangeObserver {
                 signalStrength * 100
               );
             }
-            if (this.title && attendeeId && !this.roster[attendeeId].name) {
-              const response = await fetch(
-                `${getBaseUrl()}attendee?title=${encodeURIComponent(
-                  this.title
-                )}&attendee=${encodeURIComponent(attendeeId)}`
-              );
-              const json = await response.json();
-              this.roster[attendeeId].name = json.AttendeeInfo.Name || '';
-              shouldPublishImmediately = true;
-            }
 
-            if (shouldPublishImmediately) {
-              this.publishRosterUpdate.cancel();
-            }
             this.publishRosterUpdate();
           }
         );
